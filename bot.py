@@ -1,18 +1,55 @@
 import discord
-import pymongo
-from pymongo import MongoClient
 from discord.ext import commands, tasks
 import datetime
-from urllib.request import urlopen
 import discord, datetime, time, aiohttp, asyncio, random
 from discord.ext import commands
-from random import randint
-from random import choice
-from urllib.parse import quote_plus
-from collections import deque
+import numpy as np
+from oauth2client.service_account import ServiceAccountCredentials
+import gspread
 
 bot = commands.Bot(command_prefix='!')
-client = MongoClient() # for retrieving problems and answers
+
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
+client = gspread.authorize(creds)
+
+easy = client.open('Math Club Leaderboard').get_worksheet(0)
+medium = client.open('Math Club Leaderboard').get_worksheet(1)
+hard = client.open('Math Club Leaderboard').get_worksheet(2)
+diffic = {
+    "Hard" : hard,
+    "Medium" : medium,
+    "Easy" : easy
+}
+
+def update_leaderboard(): # basically just rearranges people according to their point values
+  for sheet in diffic:
+    points = diffic[sheet].col_values(3)
+    del points[0]
+    points = [x for x in points if x] # added
+    print("debug1")
+    print(points)
+    indices = np.argsort(points)
+    points.sort(reverse=True)
+    print(points)
+    indices = list(reversed(list(indices)))
+    points.insert(0, "Points")
+    for index, i in enumerate(points):
+      diffic[sheet].update_cell(index+1, 3, i) # swapped
+    names = diffic[sheet].col_values(2)
+    del names[0]
+    names = [x for x in names if x] # added
+    if(len(indices) == 0):
+      pass
+    else:
+      print("debug2")
+      print(names)
+      print(indices)
+      names = [names[i] for i in indices]
+    print(names)
+    names.insert(0, "Names")
+    for index, i in enumerate(names):
+      diffic[sheet].update_cell(index+1, 2, i) # swapped
 
 @bot.event
 async def on_ready():
@@ -36,10 +73,61 @@ async def problem(ctx, year, competition, prob):
       await ctx.send(embed=embedv)
     except:
       pass
-    
+
+def is_url_image(image_url):
+   image_formats = ("image/png", "image/jpeg", "image/jpg")
+   r = requests.head(image_url)
+   if r.headers["content-type"] in image_formats:
+      return True
+   return False
+
+@bot.command()
+@commands.has_role('Admin')
+async def potd(ctx, problem, format, difficulty):
+    date = str(datetime.datetime.now().date())
+    date = datetime.datetime.strptime(date, '%Y-%m-%d').strftime('%m/%d/%Y')
+    embedv = discord.Embed(title="Problem of The Day", description=date, color=0xffff00)
+    try:
+      if(is_url_image(problem) == True):
+        embedv.set_image(url=problem)
+      else:
+        if(problem.startswith("$")):
+          message = await ctx.send(problem)
+          await message.delete()
+        else:
+          embedv.add_field(name="Problem", value=problem, inline=False)
+    except:
+      if(problem.startswith("$")):
+        message = await ctx.send(problem)
+        await message.delete()
+      else:
+        embedv.add_field(name="Problem", value=problem, inline=False)
+    embedv.add_field(name="Answer Format", value=format, inline=False)
+    embedv.add_field(name="Points", value="1st - 50 Points \n 2nd - 30 Points \n 3rd - 20 Points \n 4th - 10 Points \n 5h - 1 Point", inline=False)
+    embedv.add_field(name="Difficulty", value=difficulty, inline=False)
+    await ctx.send(embed=embedv)
+    await ctx.message.delete()
+
+@bot.command()
+@commands.has_role('Admin')
+async def potdhelp(ctx):
+  await ctx.send("`!potd [problem text/image url] [answer format] [difficulty]`")
+
+@bot.command()
+@commands.has_role('Admin')
+async def leaderboard_update(ctx, name, points, difficulty):
+  if(name not in diffic[difficulty].col_values(2)): 
+    diffic[difficulty].update_cell(25, 2, name) 
+    diffic[difficulty].update_cell(25, 3,  points) 
+  else:
+    index = diffic[difficulty].col_values(2).index(name)
+    past_points = diffic[difficulty].cell(index+1, 3).value
+    diffic[difficulty].update_cell(index+1, 3, int(past_points) + int(points)) # not swapped
+  update_leaderboard()  
+
 @bot.command()
 async def info(ctx):
-  await ctx.send("Hi! Welcome to Math Club! Our goal is to prepare you to be better at math and help you understand confusing and new topics. We also plan to try the AMC tests. The AMC test is full of fun and interesting problems that can lead to some insight on math tricks and shortcuts. A math problem should be up on `#cool-problems` at noon daily. Solve it to get points and score high on the leaderboard. First place will get a prize at the end of the year!")
+  await ctx.send("Hi! Welcome to Math Club! Our goal is to prepare you to be better at math and help you understand confusing and new topics. We're also going to offer the opportunity for you to take the American Mathematics Competition (AMC) test. The AMC test is full of fun and interesting problems that can lead to some insight on math tricks and shortcuts. A math problem should be up on `#cool-problems` at noon two days of the week. Solve it to get points and score high on the leaderboard. First place will get a prize at the end of the year! \n \n Please tell us your name, grade, and current math class so we can get to know you!")
 
 @bot.command()
 async def commands(ctx):
@@ -59,85 +147,6 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
-# WIP command that posts stuff from r/learnmath
-acceptableImageFormats = [".png",".jpg",".jpeg",".gif",".gifv",".webm",".mp4","imgur.com"]
-memeHistory = deque()
-memeSubreddits = ["learnmath"]
-
-async def getSub(self, ctx, sub):
-  """Get stuff from requested sub"""
-  async with aiohttp.ClientSession() as session:
-      async with session.get(f"https://www.reddit.com/r{sub}/hot.json?limit=100") as response:
-          request = await response.json()
-
-  attempts = 1
-  while attempts < 5:
-      if 'error' in request:
-          print("failed request {}".format(attempts))
-          await asyncio.sleep(2)
-          async with aiohttp.ClientSession() as session:
-              async with session.get(f"https://www.reddit.com/r/{sub}/hot.json?limit=100") as response:
-                  request = await response.json()
-          attempts += 1
-      else:
-          index = 0
-
-          for index, val in enumerate(request['data']['children']):
-              if 'url' in val['data']:
-                  url = val['data']['url']
-                  urlLower = url.lower()
-                  accepted = False
-                  for j, v, in enumerate(acceptableImageFormats): #check if it's an acceptable image
-                      if v in urlLower:
-                          accepted = True
-                  if accepted:
-                      if url not in memeHistory:
-                          memeHistory.append(url)  #add the url to the history, so it won't be posted again
-                          if len(memeHistory) > 63: #limit size
-                              memeHistory.popleft() #remove the oldest
-
-                          break #done with this loop, can send image
-          await ctx.send(memeHistory[len(memeHistory) - 1]) #send the last image
-          return
-  await ctx.send("_{}! ({})_".format(str(request['message']), str(request['error'])))
-
-@bot.command()
-async def learnmath(ctx):
-  """Memes from various subreddits (excluding r/me_irl. some don't understand those memes)"""
-  async with aiohttp.ClientSession() as session:
-      async with session.get("https://www.reddit.com/r/{0}/hot.json?limit=100".format(random.choice(memeSubreddits))) as response:
-          request = await response.json()
-
-  attempts = 1
-  while attempts < 5:
-      if 'error' in request:
-          print("failed request {}".format(attempts))
-          await asyncio.sleep(2)
-          async with aiohttp.ClientSession() as session:
-              async with session.get("https://www.reddit.com/r/{0}/hot.json?limit=100".format(random.choice(memeSubreddits))) as response:
-                  request = await response.json()
-          attempts += 1
-      else:
-          index = 0
-
-          for index, val in enumerate(request['data']['children']):
-              if 'url' in val['data']:
-                  url = val['data']['url']
-                  urlLower = url.lower()
-                  accepted = False
-                  for j, v, in enumerate(acceptableImageFormats): 
-                      if v in urlLower:
-                          accepted = True
-                  if accepted:
-                      if url not in memeHistory:
-                          memeHistory.append(url)  
-                          if len(memeHistory) > 63: 
-                              memeHistory.popleft() 
-
-                          break 
-          await ctx.send(memeHistory[len(memeHistory) - 1])
-          return
-  await ctx.send("_{}! ({})_".format(str(request['message']), str(request['error'])))
 
 
     
